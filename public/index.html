@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Listing Video Tour Generator</title>
+<style>
+  :root {
+    --teal: #003C44;
+    --gold: #B7945A;
+    --bg: #f7f6f3;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    margin: 0;
+    padding: 0;
+    color: #222;
+  }
+  header {
+    background: var(--teal);
+    color: white;
+    padding: 24px 32px;
+  }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600; }
+  header p { margin: 4px 0 0; opacity: 0.85; font-size: 14px; }
+  main {
+    max-width: 720px;
+    margin: 32px auto;
+    padding: 0 20px 60px;
+  }
+  .card {
+    background: white;
+    border-radius: 10px;
+    padding: 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    margin-bottom: 20px;
+  }
+  label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 14px; }
+  input[type="password"], input[type="text"] {
+    width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;
+  }
+  button {
+    background: var(--teal); color: white; border: none; padding: 12px 20px;
+    border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { opacity: 0.9; }
+  button:disabled { background: #ccc; cursor: not-allowed; }
+  .drop-zone {
+    border: 2px dashed #ccc; border-radius: 8px; padding: 30px; text-align: center;
+    color: #888; cursor: pointer; margin-bottom: 16px;
+  }
+  .drop-zone.dragover { border-color: var(--gold); background: #fdf9f2; }
+  .photo-row {
+    display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #eee;
+  }
+  .photo-row img { width: 70px; height: 50px; object-fit: cover; border-radius: 4px; }
+  .photo-row select { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #ddd; }
+  .photo-row .remove { color: #c0392b; cursor: pointer; font-size: 13px; }
+  #status { margin-top: 16px; font-size: 14px; }
+  #result { margin-top: 20px; }
+  #result video { width: 100%; border-radius: 8px; }
+  .hidden { display: none; }
+  .progress-bar { height: 6px; background: #eee; border-radius: 3px; overflow: hidden; margin-top: 10px; }
+  .progress-bar-fill { height: 100%; background: var(--gold); width: 0%; transition: width 0.3s; }
+  small.hint { color: #888; display: block; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Listing Video Tour Generator</h1>
+  <p>Turn staging photos into a stitched AI video tour</p>
+</header>
+
+<main>
+
+  <div class="card" id="gate">
+    <label for="pw">Access password</label>
+    <input type="password" id="pw" placeholder="Enter password">
+    <div style="margin-top:12px;">
+      <button onclick="checkPassword()">Enter</button>
+    </div>
+    <div id="gate-error" style="color:#c0392b; margin-top:8px; font-size:13px;"></div>
+  </div>
+
+  <div class="card hidden" id="upload-card">
+    <label>Property photos (one per room)</label>
+    <div class="drop-zone" id="dropZone">
+      Click or drag photos here (JPG/PNG, up to 15 rooms)
+      <input type="file" id="fileInput" accept="image/*" multiple class="hidden">
+    </div>
+    <div id="photoList"></div>
+    <small class="hint">Each photo generates a ~5 second clip. Clips are stitched in the order shown above &mdash; drag isn't supported yet, so add photos in the order you want them to appear.</small>
+    <div style="margin-top:20px;">
+      <button id="generateBtn" onclick="generateTour()" disabled>Generate Video Tour</button>
+    </div>
+    <div id="status"></div>
+    <div class="progress-bar hidden" id="progressBar"><div class="progress-bar-fill" id="progressFill"></div></div>
+  </div>
+
+  <div class="card hidden" id="result">
+    <label>Your video tour</label>
+    <video id="resultVideo" controls></video>
+    <div style="margin-top:12px;">
+      <a id="downloadLink" href="#" download>Download MP4</a>
+    </div>
+  </div>
+
+</main>
+
+<script>
+let sitePassword = '';
+let photos = []; // { file, roomType, previewUrl }
+
+const ROOM_TYPES = [
+  ['exterior', 'Exterior / Front'],
+  ['living', 'Living Room'],
+  ['kitchen', 'Kitchen'],
+  ['primary_bedroom', 'Primary Bedroom'],
+  ['bedroom', 'Bedroom'],
+  ['bathroom', 'Bathroom'],
+  ['dining', 'Dining Room'],
+  ['outdoor', 'Backyard / Outdoor'],
+  ['other', 'Other']
+];
+
+async function checkPassword() {
+  const pw = document.getElementById('pw').value;
+  const res = await fetch('/api/check-password', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: pw })
+  });
+  if (res.ok) {
+    sitePassword = pw;
+    document.getElementById('gate').classList.add('hidden');
+    document.getElementById('upload-card').classList.remove('hidden');
+  } else {
+    document.getElementById('gate-error').textContent = 'Incorrect password.';
+  }
+}
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+function handleFiles(fileList) {
+  Array.from(fileList).forEach(file => {
+    photos.push({ file, roomType: 'other', previewUrl: URL.createObjectURL(file) });
+  });
+  renderPhotoList();
+}
+
+function renderPhotoList() {
+  const listEl = document.getElementById('photoList');
+  listEl.innerHTML = '';
+  photos.forEach((p, i) => {
+    const row = document.createElement('div');
+    row.className = 'photo-row';
+    row.innerHTML = `
+      <img src="${p.previewUrl}">
+      <select onchange="photos[${i}].roomType = this.value">
+        ${ROOM_TYPES.map(([val, label]) => `<option value="${val}" ${val === p.roomType ? 'selected' : ''}>${label}</option>`).join('')}
+      </select>
+      <span class="remove" onclick="removePhoto(${i})">Remove</span>
+    `;
+    listEl.appendChild(row);
+  });
+  document.getElementById('generateBtn').disabled = photos.length === 0;
+}
+
+function removePhoto(i) {
+  photos.splice(i, 1);
+  renderPhotoList();
+}
+
+async function generateTour() {
+  const btn = document.getElementById('generateBtn');
+  const status = document.getElementById('status');
+  const progressBar = document.getElementById('progressBar');
+  btn.disabled = true;
+  status.textContent = `Generating clips for ${photos.length} room(s)... this typically takes 1-3 minutes per room.`;
+  progressBar.classList.remove('hidden');
+  document.getElementById('progressFill').style.width = '15%';
+
+  const formData = new FormData();
+  formData.append('password', sitePassword);
+  photos.forEach(p => formData.append('photos', p.file));
+  formData.append('roomTypes', JSON.stringify(photos.map(p => p.roomType)));
+
+  try {
+    const res = await fetch('/api/generate-tour', {
+      method: 'POST',
+      headers: { 'x-site-password': sitePassword },
+      body: formData
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Generation failed');
+
+    document.getElementById('progressFill').style.width = '100%';
+    status.textContent = 'Done!';
+    document.getElementById('result').classList.remove('hidden');
+    document.getElementById('resultVideo').src = data.videoUrl;
+    document.getElementById('downloadLink').href = data.videoUrl;
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
+
+</body>
+</html>
