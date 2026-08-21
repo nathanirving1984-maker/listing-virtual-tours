@@ -4,88 +4,348 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Listing Video Tour Generator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --teal: #003C44;
-    --gold: #B7945A;
-    --bg: #f7f6f3;
+    --cb-blue: #012169;
+    --cb-blue-700: #01184d;
+    --cb-blue-400: #2b4b9b;
+    --cb-blue-100: #e8edf7;
+    --accent: #B7945A;
+    --bg: #f4f6fa;
+    --surface: #ffffff;
+    --text: #16181d;
+    --text-muted: #5c6472;
+    --border: #dfe3ec;
+    --danger: #c0392b;
+    --radius: 12px;
+    --shadow-sm: 0 1px 2px rgba(1, 33, 105, 0.06);
+    --shadow-md: 0 4px 16px rgba(1, 33, 105, 0.08);
   }
+
   * { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: var(--bg);
     margin: 0;
     padding: 0;
-    color: #222;
+    color: var(--text);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
   }
+
+  /* ---------- Header ---------- */
   header {
-    background: var(--teal);
-    color: white;
-    padding: 24px 32px;
+    background: linear-gradient(135deg, var(--cb-blue) 0%, var(--cb-blue-700) 100%);
+    color: #fff;
+    padding: 28px 32px;
+    border-bottom: 3px solid var(--accent);
   }
-  header h1 { margin: 0; font-size: 22px; font-weight: 600; }
-  header p { margin: 4px 0 0; opacity: 0.85; font-size: 14px; }
+  .header-inner {
+    max-width: 780px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .brand-chip {
+    flex: 0 0 auto;
+    background: #fff;
+    border-radius: 8px;
+    padding: 10px 13px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  }
+  .brand-logo {
+    display: block;
+    height: 86px;
+    width: auto;
+  }
+  .brand-fallback {
+    color: var(--cb-blue);
+    font-weight: 700;
+    font-size: 12px;
+    line-height: 1.25;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    max-width: 88px;
+    text-align: center;
+  }
+  .byline {
+    margin: 7px 0 0;
+    font-size: 13px;
+    font-weight: 500;
+    opacity: 0.78;
+    letter-spacing: 0.2px;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 21px;
+    font-weight: 600;
+    letter-spacing: -0.2px;
+  }
+  header p {
+    margin: 3px 0 0;
+    opacity: 0.82;
+    font-size: 14px;
+    font-weight: 400;
+  }
+
+  /* ---------- Layout ---------- */
   main {
-    max-width: 720px;
+    max-width: 780px;
     margin: 32px auto;
-    padding: 0 20px 60px;
+    padding: 0 20px 72px;
   }
+
   .card {
-    background: white;
-    border-radius: 10px;
-    padding: 24px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 26px;
+    box-shadow: var(--shadow-sm);
     margin-bottom: 20px;
   }
-  label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 14px; }
+  .card-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.9px;
+    color: var(--cb-blue-400);
+    margin: 0 0 16px;
+  }
+
+  /* ---------- Forms ---------- */
+  label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 7px;
+    font-size: 14px;
+    color: var(--text);
+  }
   input[type="password"], input[type="text"] {
-    width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px;
+    width: 100%;
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    font-family: inherit;
+    color: var(--text);
+    background: #fff;
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
+  input[type="password"]:focus, input[type="text"]:focus {
+    outline: none;
+    border-color: var(--cb-blue-400);
+    box-shadow: 0 0 0 3px var(--cb-blue-100);
+  }
+
   button {
-    background: var(--teal); color: white; border: none; padding: 12px 20px;
-    border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;
+    background: var(--cb-blue);
+    color: #fff;
+    border: none;
+    padding: 12px 22px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.05s;
   }
-  button:hover { opacity: 0.9; }
-  button:disabled { background: #ccc; cursor: not-allowed; }
+  button:hover:not(:disabled) { background: var(--cb-blue-700); }
+  button:active:not(:disabled) { transform: translateY(1px); }
+  button:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--cb-blue-100);
+  }
+  button:disabled {
+    background: #c9cedb;
+    cursor: not-allowed;
+  }
+
+  /* ---------- Drop zone ---------- */
   .drop-zone {
-    border: 2px dashed #ccc; border-radius: 8px; padding: 30px; text-align: center;
-    color: #888; cursor: pointer; margin-bottom: 16px;
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 34px 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    margin-bottom: 16px;
+    background: #fbfcfe;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
   }
-  .drop-zone.dragover { border-color: var(--gold); background: #fdf9f2; }
+  .drop-zone:hover {
+    border-color: var(--cb-blue-400);
+    color: var(--cb-blue);
+  }
+  .drop-zone.dragover {
+    border-color: var(--cb-blue);
+    background: var(--cb-blue-100);
+    color: var(--cb-blue);
+  }
+
+  /* ---------- Photo rows ---------- */
   .photo-row {
-    display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #eee;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
   }
-  .photo-row img { width: 70px; height: 50px; object-fit: cover; border-radius: 4px; }
-  .photo-row select { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #ddd; font-size: 13px; }
-  .photo-row .remove { color: #c0392b; cursor: pointer; font-size: 13px; }
-  #status { margin-top: 16px; font-size: 14px; }
+  .photo-row:last-child { border-bottom: none; }
+  .photo-row img {
+    width: 74px;
+    height: 54px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    flex: 0 0 74px;
+  }
+  .photo-row select {
+    flex: 1;
+    min-width: 0;
+    padding: 9px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 14px;
+    font-family: inherit;
+    color: var(--text);
+    background: #fff;
+  }
+  .photo-row select:focus {
+    outline: none;
+    border-color: var(--cb-blue-400);
+    box-shadow: 0 0 0 3px var(--cb-blue-100);
+  }
+  .photo-row .remove {
+    color: var(--danger);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    flex: 0 0 auto;
+    padding: 4px 2px;
+  }
+  .photo-row .remove:hover { text-decoration: underline; }
+
+  /* ---------- Status / progress ---------- */
+  #status {
+    margin-top: 16px;
+    font-size: 14px;
+    color: var(--text-muted);
+  }
   #result { margin-top: 20px; }
-  #result video { width: 100%; border-radius: 8px; }
+  #result video {
+    width: 100%;
+    border-radius: 10px;
+    display: block;
+    background: #000;
+  }
   .hidden { display: none; }
-  .progress-bar { height: 6px; background: #eee; border-radius: 3px; overflow: hidden; margin-top: 10px; }
-  .progress-bar-fill { height: 100%; background: var(--gold); width: 0%; transition: width 0.3s; }
-  small.hint { color: #888; display: block; margin-top: 6px; }
+
+  .progress-bar {
+    height: 6px;
+    background: var(--cb-blue-100);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-top: 12px;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--cb-blue-400), var(--accent));
+    width: 0%;
+    border-radius: 999px;
+    transition: width 0.3s ease;
+  }
+
+  small.hint {
+    color: var(--text-muted);
+    display: block;
+    margin-top: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .download-link {
+    display: inline-block;
+    color: var(--cb-blue);
+    font-weight: 600;
+    font-size: 14px;
+    text-decoration: none;
+    border-bottom: 1px solid var(--cb-blue-100);
+    padding-bottom: 1px;
+  }
+  .download-link:hover { border-bottom-color: var(--cb-blue); }
+
+  .error-text {
+    color: var(--danger);
+    margin-top: 10px;
+    font-size: 13px;
+  }
+
+  /* ---------- Footer ---------- */
+  footer {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 0 20px 40px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 560px) {
+    header { padding: 22px 20px; }
+    header h1 { font-size: 19px; }
+    .header-inner { gap: 13px; }
+    .brand-chip { padding: 8px 10px; }
+    .brand-logo { height: 62px; }
+    main { margin: 22px auto; padding: 0 16px 56px; }
+    .card { padding: 20px; }
+    .photo-row { flex-wrap: wrap; }
+    .photo-row select { flex: 1 1 100%; order: 3; }
+  }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>Listing Video Tour Generator</h1>
-  <p>Turn staging photos into a stitched AI video tour</p>
+  <div class="header-inner">
+    <div class="brand-chip">
+      <img src="cb-logo.png" alt="Coldwell Banker Realty" class="brand-logo"
+           onerror="this.remove(); document.getElementById('brandFallback').hidden = false;">
+      <span id="brandFallback" class="brand-fallback" hidden>Coldwell Banker Realty</span>
+    </div>
+    <div>
+      <h1>Listing Video Tour Generator</h1>
+      <p>Turn staging photos into a stitched AI video tour</p>
+      <p class="byline">By Nathan Irving, DRE 02414117</p>
+    </div>
+  </div>
 </header>
 
 <main>
 
   <div class="card" id="gate">
+    <p class="card-title">Restricted access</p>
     <label for="pw">Access password</label>
     <input type="password" id="pw" placeholder="Enter password">
-    <div style="margin-top:12px;">
+    <div style="margin-top:14px;">
       <button onclick="checkPassword()">Enter</button>
     </div>
-    <div id="gate-error" style="color:#c0392b; margin-top:8px; font-size:13px;"></div>
+    <div id="gate-error" class="error-text"></div>
   </div>
 
   <div class="card hidden" id="upload-card">
+    <p class="card-title">Step 1 &middot; Add photos</p>
     <label>Property photos (one per room)</label>
     <div class="drop-zone" id="dropZone">
       Click or drag photos here (JPG/PNG, up to 15 rooms)
@@ -93,7 +353,7 @@
     </div>
     <div id="photoList"></div>
     <small class="hint">Each photo generates a ~5 second clip. Clips are stitched in the order shown above &mdash; drag isn't supported yet, so add photos in the order you want them to appear.</small>
-    <div style="margin-top:20px;">
+    <div style="margin-top:22px;">
       <button id="generateBtn" onclick="generateTour()" disabled>Generate Video Tour</button>
     </div>
     <div id="status"></div>
@@ -101,14 +361,20 @@
   </div>
 
   <div class="card hidden" id="result">
+    <p class="card-title">Step 2 &middot; Your tour</p>
     <label>Your video tour</label>
     <video id="resultVideo" controls></video>
-    <div style="margin-top:12px;">
-      <a id="downloadLink" href="#" download>Download MP4</a>
+    <div style="margin-top:14px;">
+      <a id="downloadLink" class="download-link" href="#" download>Download MP4</a>
     </div>
   </div>
 
 </main>
+
+<footer>
+  For internal listing-marketing use. AI-generated footage is illustrative and may not
+  depict the property exactly as it appears in person.
+</footer>
 
 <script>
 let sitePassword = '';
