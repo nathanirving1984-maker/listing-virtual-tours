@@ -53,18 +53,37 @@
     align-items: center;
     gap: 16px;
   }
-  .logo-mark {
-    width: 44px;
-    height: 44px;
-    flex: 0 0 44px;
-    border: 2px solid rgba(255, 255, 255, 0.9);
-    border-radius: 6px;
+  .brand-chip {
+    flex: 0 0 auto;
+    background: #fff;
+    border-radius: 8px;
+    padding: 10px 13px;
     display: flex;
     align-items: center;
     justify-content: center;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  }
+  .brand-logo {
+    display: block;
+    height: 86px;
+    width: auto;
+  }
+  .brand-fallback {
+    color: var(--cb-blue);
     font-weight: 700;
-    font-size: 15px;
-    letter-spacing: 0.5px;
+    font-size: 12px;
+    line-height: 1.25;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    max-width: 88px;
+    text-align: center;
+  }
+  .byline {
+    margin: 7px 0 0;
+    font-size: 13px;
+    font-weight: 500;
+    opacity: 0.78;
+    letter-spacing: 0.2px;
   }
   header h1 {
     margin: 0;
@@ -286,6 +305,9 @@
   @media (max-width: 560px) {
     header { padding: 22px 20px; }
     header h1 { font-size: 19px; }
+    .header-inner { gap: 13px; }
+    .brand-chip { padding: 8px 10px; }
+    .brand-logo { height: 62px; }
     main { margin: 22px auto; padding: 0 16px 56px; }
     .card { padding: 20px; }
     .photo-row { flex-wrap: wrap; }
@@ -297,10 +319,15 @@
 
 <header>
   <div class="header-inner">
-    <div class="logo-mark">CB</div>
+    <div class="brand-chip">
+      <img src="cb-logo.png" alt="Coldwell Banker Realty" class="brand-logo"
+           onerror="this.remove(); document.getElementById('brandFallback').hidden = false;">
+      <span id="brandFallback" class="brand-fallback" hidden>Coldwell Banker Realty</span>
+    </div>
     <div>
       <h1>Listing Video Tour Generator</h1>
       <p>Turn staging photos into a stitched AI video tour</p>
+      <p class="byline">By Nathan Irving, DRE 02414117</p>
     </div>
   </div>
 </header>
