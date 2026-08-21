@@ -56,7 +56,7 @@
     display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #eee;
   }
   .photo-row img { width: 70px; height: 50px; object-fit: cover; border-radius: 4px; }
-  .photo-row select { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #ddd; }
+  .photo-row select { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #ddd; font-size: 13px; }
   .photo-row .remove { color: #c0392b; cursor: pointer; font-size: 13px; }
   #status { margin-top: 16px; font-size: 14px; }
   #result { margin-top: 20px; }
@@ -112,7 +112,7 @@
 
 <script>
 let sitePassword = '';
-let photos = []; // { file, roomType, previewUrl }
+let photos = []; // { file, roomType, motionType, previewUrl }
 
 const ROOM_TYPES = [
   ['exterior', 'Exterior / Front'],
@@ -157,7 +157,7 @@ fileInput.addEventListener('change', e => handleFiles(e.target.files));
 
 function handleFiles(fileList) {
   Array.from(fileList).forEach(file => {
-    photos.push({ file, roomType: 'other', previewUrl: URL.createObjectURL(file) });
+    photos.push({ file, roomType: 'other', motionType: 'pan', previewUrl: URL.createObjectURL(file) });
   });
   renderPhotoList();
 }
@@ -172,6 +172,10 @@ function renderPhotoList() {
       <img src="${p.previewUrl}">
       <select onchange="photos[${i}].roomType = this.value">
         ${ROOM_TYPES.map(([val, label]) => `<option value="${val}" ${val === p.roomType ? 'selected' : ''}>${label}</option>`).join('')}
+      </select>
+      <select onchange="photos[${i}].motionType = this.value" title="Pan/zoom is free and keeps any text on the photo exact. AI glide costs Runway credits and can distort text.">
+        <option value="pan" ${p.motionType === 'pan' ? 'selected' : ''}>Pan/zoom (free, text-safe)</option>
+        <option value="ai" ${p.motionType === 'ai' ? 'selected' : ''}>AI glide (paid, no text)</option>
       </select>
       <span class="remove" onclick="removePhoto(${i})">Remove</span>
     `;
@@ -198,6 +202,7 @@ async function generateTour() {
   formData.append('password', sitePassword);
   photos.forEach(p => formData.append('photos', p.file));
   formData.append('roomTypes', JSON.stringify(photos.map(p => p.roomType)));
+  formData.append('motionTypes', JSON.stringify(photos.map(p => p.motionType)));
 
   try {
     const res = await fetch('/api/generate-tour', {

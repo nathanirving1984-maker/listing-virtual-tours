@@ -108,6 +108,28 @@ async function downloadFile(url, destPath) {
   fs.writeFileSync(destPath, buffer);
 }
 
+// --- Text-safe motion: pure ffmpeg pan/zoom (Ken Burns), no regeneration ---
+// Preserves every pixel of the original photo exactly (including any overlaid
+// text/graphics), unlike Runway which redraws the frame and can distort or
+// drop text. Also free — no API cost per clip.
+async function panZoomClip(imagePath, outputPath, { durationSec = 5, fps = 25, zoomTo = 1.3, direction = 'in' } = {}) {
+  const frames = durationSec * fps;
+  const zoomExpr = direction === 'in'
+    ? `min(zoom+${((zoomTo - 1) / frames).toFixed(6)},${zoomTo})`
+    : `if(eq(on,0),${zoomTo},max(zoom-${((zoomTo - 1) / frames).toFixed(6)},1))`;
+
+  await execFileAsync('ffmpeg', [
+    '-y',
+    '-loop', '1',
+    '-i', imagePath,
+    '-vf', `scale=8000:-1,zoompan=z='${zoomExpr}':d=${frames}:s=1280x720:fps=${fps}`,
+    '-t', String(durationSec),
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+    outputPath
+  ]);
+}
+
 // --- Stitching ---
 async function stitchClips(clipPaths, outputPath) {
   const listPath = outputPath.replace('.mp4', '_list.txt');
@@ -134,6 +156,8 @@ app.post('/api/generate-tour', requirePassword, upload.array('photos', 15), asyn
 
   try {
     const roomTypes = JSON.parse(req.body.roomTypes || '[]'); // array aligned with req.files order
+    // motionTypes[i] is 'pan' (free, text-safe, default) or 'ai' (Runway, paid, no on-photo text)
+    const motionTypes = JSON.parse(req.body.motionTypes || '[]');
     const files = req.files;
 
     if (!files || files.length === 0) {
@@ -142,28 +166,43 @@ app.post('/api/generate-tour', requirePassword, upload.array('photos', 15), asyn
 
     console.log(`[${jobId}] Starting job with ${files.length} photos`);
 
-    // 1. Kick off all Runway tasks in parallel
-    const taskPromises = files.map(async (file, i) => {
+    const clipPaths = new Array(files.length);
+
+    // 1. Photos flagged 'ai' go to Runway in parallel; 'pan' photos never touch the API
+    const aiIndices = [];
+    const panIndices = [];
+    files.forEach((f, i) => {
+      (((motionTypes[i] || 'pan') === 'ai') ? aiIndices : panIndices).push(i);
+    });
+
+    const aiTaskPromises = aiIndices.map(async (i) => {
       const roomType = roomTypes[i] || 'other';
-      const imageBuffer = fs.readFileSync(file.path);
-      const mimeType = file.mimetype || 'image/jpeg';
+      const imageBuffer = fs.readFileSync(files[i].path);
+      const mimeType = files[i].mimetype || 'image/jpeg';
       const dataUri = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
       const taskId = await createImageToVideoTask(dataUri, promptFor(roomType));
       console.log(`[${jobId}] Started Runway task ${taskId} for room ${i} (${roomType})`);
-      return { index: i, taskId, roomType };
+      return { index: i, taskId };
     });
+    const aiTasks = await Promise.all(aiTaskPromises);
 
-    const tasks = await Promise.all(taskPromises);
-
-    // 2. Poll each task and download the resulting clip, in original order
-    const clipPaths = new Array(tasks.length);
-    await Promise.all(tasks.map(async ({ index, taskId }) => {
-      const videoUrl = await pollTask(taskId);
-      const clipPath = path.join(jobDir, `clip_${String(index).padStart(2, '0')}.mp4`);
-      await downloadFile(videoUrl, clipPath);
-      clipPaths[index] = clipPath;
-      console.log(`[${jobId}] Downloaded clip ${index}`);
-    }));
+    await Promise.all([
+      // 2a. Poll + download Runway clips
+      ...aiTasks.map(async ({ index, taskId }) => {
+        const videoUrl = await pollTask(taskId);
+        const clipPath = path.join(jobDir, `clip_${String(index).padStart(2, '0')}.mp4`);
+        await downloadFile(videoUrl, clipPath);
+        clipPaths[index] = clipPath;
+        console.log(`[${jobId}] Downloaded Runway clip ${index}`);
+      }),
+      // 2b. Generate pan/zoom clips locally — free, instant-ish, exact text preserved
+      ...panIndices.map(async (index) => {
+        const clipPath = path.join(jobDir, `clip_${String(index).padStart(2, '0')}.mp4`);
+        await panZoomClip(files[index].path, clipPath);
+        clipPaths[index] = clipPath;
+        console.log(`[${jobId}] Generated pan/zoom clip ${index}`);
+      })
+    ]);
 
     // 3. Stitch in original room order
     const outputFileName = `tour_${jobId}.mp4`;
