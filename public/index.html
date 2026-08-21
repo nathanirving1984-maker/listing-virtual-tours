@@ -476,7 +476,17 @@ async function generateTour() {
       headers: { 'x-site-password': sitePassword },
       body: formData
     });
-    const data = await res.json();
+    const rawText = await res.text();
+    let data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (parseErr) {
+      throw new Error(
+        res.ok
+          ? 'Server returned an empty or invalid response — it likely crashed mid-request (often a memory limit on the hosting side). Try again with fewer photos, or check the Render logs.'
+          : `Server error (status ${res.status}): ${rawText.slice(0, 200) || 'no details returned'}`
+      );
+    }
     if (!res.ok) throw new Error(data.error || 'Generation failed');
 
     document.getElementById('progressFill').style.width = '100%';

@@ -17,6 +17,13 @@ if (!RUNWAY_KEY) {
   console.error('Missing RUNWAYML_API_SECRET in environment. Set it before starting the server.');
 }
 
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION — this is likely why a request came back empty:', err);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('UNHANDLED REJECTION — this is likely why a request came back empty:', err);
+});
+
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -118,16 +125,23 @@ async function panZoomClip(imagePath, outputPath, { durationSec = 5, fps = 25, z
     ? `min(zoom+${((zoomTo - 1) / frames).toFixed(6)},${zoomTo})`
     : `if(eq(on,0),${zoomTo},max(zoom-${((zoomTo - 1) / frames).toFixed(6)},1))`;
 
+  // Cap the upscale target at 2400px wide (was 8000) regardless of the source
+  // photo's resolution — this is the main memory fix. A 12MP staged photo
+  // scaled to 8000px wide before zoompan could push past Render's free-tier
+  // 512MB RAM limit and crash the container mid-request, which is what was
+  // producing the truncated/empty response on the frontend.
   await execFileAsync('ffmpeg', [
     '-y',
     '-loop', '1',
     '-i', imagePath,
-    '-vf', `scale=8000:-1,zoompan=z='${zoomExpr}':d=${frames}:s=1280x720:fps=${fps}`,
+    '-vf', `scale=w='min(2400,iw*3)':h=-1,zoompan=z='${zoomExpr}':d=${frames}:s=1280x720:fps=${fps}`,
     '-t', String(durationSec),
     '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-threads', '1',
     '-pix_fmt', 'yuv420p',
     outputPath
-  ]);
+  ], { maxBuffer: 1024 * 1024 * 20 });
 }
 
 // --- Stitching ---
@@ -186,23 +200,26 @@ app.post('/api/generate-tour', requirePassword, upload.array('photos', 15), asyn
     });
     const aiTasks = await Promise.all(aiTaskPromises);
 
-    await Promise.all([
-      // 2a. Poll + download Runway clips
-      ...aiTasks.map(async ({ index, taskId }) => {
-        const videoUrl = await pollTask(taskId);
-        const clipPath = path.join(jobDir, `clip_${String(index).padStart(2, '0')}.mp4`);
-        await downloadFile(videoUrl, clipPath);
-        clipPaths[index] = clipPath;
-        console.log(`[${jobId}] Downloaded Runway clip ${index}`);
-      }),
-      // 2b. Generate pan/zoom clips locally — free, instant-ish, exact text preserved
-      ...panIndices.map(async (index) => {
-        const clipPath = path.join(jobDir, `clip_${String(index).padStart(2, '0')}.mp4`);
-        await panZoomClip(files[index].path, clipPath);
-        clipPaths[index] = clipPath;
-        console.log(`[${jobId}] Generated pan/zoom clip ${index}`);
-      })
-    ]);
+    // Runway clips (network-bound, not memory-heavy locally) still run in parallel.
+    // Pan/zoom clips run one at a time — each ffmpeg process is memory-heavy enough
+    // that running several simultaneously on a small Render instance can OOM the
+    // container mid-request, which is what caused the empty/truncated response.
+    const runwayPromise = Promise.all(aiTasks.map(async ({ index, taskId }) => {
+      const videoUrl = await pollTask(taskId);
+      const clipPath = path.join(jobDir, `clip_${String(index).padStart(2, '0')}.mp4`);
+      await downloadFile(videoUrl, clipPath);
+      clipPaths[index] = clipPath;
+      console.log(`[${jobId}] Downloaded Runway clip ${index}`);
+    }));
+
+    for (const index of panIndices) {
+      const clipPath = path.join(jobDir, `clip_${String(index).padStart(2, '0')}.mp4`);
+      await panZoomClip(files[index].path, clipPath);
+      clipPaths[index] = clipPath;
+      console.log(`[${jobId}] Generated pan/zoom clip ${index}`);
+    }
+
+    await runwayPromise;
 
     // 3. Stitch in original room order
     const outputFileName = `tour_${jobId}.mp4`;
