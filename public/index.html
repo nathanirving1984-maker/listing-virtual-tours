@@ -202,6 +202,36 @@
     border-bottom: 1px solid var(--border);
   }
   .photo-row:last-child { border-bottom: none; }
+  .photo-order {
+    flex: 0 0 26px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--cb-blue);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .photo-order:active { cursor: grabbing; }
+  .photo-order:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px var(--cb-blue-100), 0 0 0 4px var(--cb-blue-400);
+  }
+  .photo-row.dragging {
+    opacity: 0.6;
+    background: var(--cb-blue-100);
+    border-radius: 8px;
+    border-bottom-color: transparent;
+  }
+  #photoList.reordering { cursor: grabbing; }
   .photo-row img {
     width: 74px;
     height: 54px;
@@ -352,7 +382,7 @@
       <input type="file" id="fileInput" accept="image/*" multiple class="hidden">
     </div>
     <div id="photoList"></div>
-    <small class="hint">Each photo generates a ~5 second clip. Clips are stitched in the order shown above &mdash; drag isn't supported yet, so add photos in the order you want them to appear.</small>
+    <small class="hint">Each photo generates a ~5 second clip. The number on each row is that clip's position in the finished video. Drag a number up or down to reorder the tour (or focus a number and press the up/down arrow keys).</small>
     <div style="margin-top:22px;">
       <button id="generateBtn" onclick="generateTour()" disabled>Generate Video Tour</button>
     </div>
@@ -390,6 +420,11 @@ const ROOM_TYPES = [
   ['dining', 'Dining Room'],
   ['outdoor', 'Backyard / Outdoor'],
   ['other', 'Other']
+];
+
+const MOTION_TYPES = [
+  ['pan', 'Pan/zoom (free, text-safe)'],
+  ['ai', 'AI glide (paid, no text)']
 ];
 
 async function checkPassword() {
@@ -431,27 +466,143 @@ function handleFiles(fileList) {
 function renderPhotoList() {
   const listEl = document.getElementById('photoList');
   listEl.innerHTML = '';
-  photos.forEach((p, i) => {
-    const row = document.createElement('div');
-    row.className = 'photo-row';
-    row.innerHTML = `
-      <img src="${p.previewUrl}">
-      <select onchange="photos[${i}].roomType = this.value">
-        ${ROOM_TYPES.map(([val, label]) => `<option value="${val}" ${val === p.roomType ? 'selected' : ''}>${label}</option>`).join('')}
-      </select>
-      <select onchange="photos[${i}].motionType = this.value" title="Pan/zoom is free and keeps any text on the photo exact. AI glide costs Runway credits and can distort text.">
-        <option value="pan" ${p.motionType === 'pan' ? 'selected' : ''}>Pan/zoom (free, text-safe)</option>
-        <option value="ai" ${p.motionType === 'ai' ? 'selected' : ''}>AI glide (paid, no text)</option>
-      </select>
-      <span class="remove" onclick="removePhoto(${i})">Remove</span>
-    `;
-    listEl.appendChild(row);
-  });
+  photos.forEach((p, i) => listEl.appendChild(buildPhotoRow(p, i)));
   document.getElementById('generateBtn').disabled = photos.length === 0;
 }
 
-function removePhoto(i) {
+// Rows hold a reference to their photo object, so reordering never leaves a
+// control pointing at the wrong index.
+function buildPhotoRow(p, i) {
+  const row = document.createElement('div');
+  row.className = 'photo-row';
+  row.photo = p;
+
+  const handle = document.createElement('span');
+  handle.className = 'photo-order';
+  handle.textContent = i + 1;
+  handle.tabIndex = 0;
+  handle.title = 'Clip position in the video \u2014 drag to reorder';
+  handle.setAttribute('aria-label',
+    `Clip ${i + 1} of ${photos.length}. Drag, or press the up and down arrow keys, to reorder.`);
+  handle.addEventListener('pointerdown', e => startDrag(e, row));
+  handle.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    const from = photos.indexOf(p);
+    movePhoto(from, from + (e.key === 'ArrowUp' ? -1 : 1));
+  });
+
+  const img = document.createElement('img');
+  img.src = p.previewUrl;
+  img.alt = '';
+  img.draggable = false;
+
+  const roomSelect = document.createElement('select');
+  ROOM_TYPES.forEach(([val, label]) => roomSelect.add(new Option(label, val, false, val === p.roomType)));
+  roomSelect.addEventListener('change', () => { p.roomType = roomSelect.value; });
+
+  const motionSelect = document.createElement('select');
+  motionSelect.title = 'Pan/zoom is free and keeps any text on the photo exact. AI glide costs Runway credits and can distort text.';
+  MOTION_TYPES.forEach(([val, label]) => motionSelect.add(new Option(label, val, false, val === p.motionType)));
+  motionSelect.addEventListener('change', () => { p.motionType = motionSelect.value; });
+
+  const remove = document.createElement('span');
+  remove.className = 'remove';
+  remove.textContent = 'Remove';
+  remove.addEventListener('click', () => removePhoto(p));
+
+  row.append(handle, img, roomSelect, motionSelect, remove);
+  return row;
+}
+
+function removePhoto(p) {
+  const i = photos.indexOf(p);
+  if (i === -1) return;
+  URL.revokeObjectURL(p.previewUrl);
   photos.splice(i, 1);
+  renderPhotoList();
+}
+
+function movePhoto(from, to) {
+  if (from < 0 || to < 0 || to >= photos.length || from === to) return;
+  const [p] = photos.splice(from, 1);
+  photos.splice(to, 0, p);
+  renderPhotoList();
+  const handles = document.querySelectorAll('#photoList .photo-order');
+  if (handles[to]) handles[to].focus();
+}
+
+/* ---------- Drag to reorder ----------
+   Pointer events so one code path covers mouse, touch and pen. The dragged row
+   is moved in the DOM as the pointer passes each neighbour; the photos array is
+   rebuilt from the final DOM order when the pointer is released. */
+let dragState = null;
+
+function startDrag(e, row) {
+  if (dragState || photos.length < 2) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  e.preventDefault();
+  const listEl = document.getElementById('photoList');
+  // Listen on window rather than capturing the pointer: reordering moves the
+  // dragged row within the list, and a DOM move releases pointer capture.
+  dragState = { row, listEl, pointerId: e.pointerId, lastY: e.clientY, scrollDir: 0, scrollTimer: null };
+  row.classList.add('dragging');
+  listEl.classList.add('reordering');
+  window.addEventListener('pointermove', onDragMove);
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('pointercancel', endDrag);
+}
+
+function onDragMove(e) {
+  if (!dragState || e.pointerId !== dragState.pointerId) return;
+  e.preventDefault();
+  dragState.lastY = e.clientY;
+  placeRow(e.clientY);
+  updateAutoScroll(e.clientY);
+}
+
+function placeRow(y) {
+  const { listEl, row } = dragState;
+  const others = Array.from(listEl.children).filter(r => r !== row);
+  const before = others.find(r => {
+    const box = r.getBoundingClientRect();
+    return y < box.top + box.height / 2;
+  }) || null;
+  if (before !== row.nextSibling) listEl.insertBefore(row, before);
+  renumberRows(listEl);
+}
+
+function renumberRows(listEl) {
+  Array.from(listEl.children).forEach((r, i) => {
+    r.querySelector('.photo-order').textContent = i + 1;
+  });
+}
+
+// Keep scrolling while the pointer sits near the top or bottom of the window,
+// so a long list can be reordered end to end in one drag.
+function updateAutoScroll(y) {
+  const EDGE = 90, STEP = 14;
+  const dir = y < EDGE ? -1 : (y > window.innerHeight - EDGE ? 1 : 0);
+  if (dir === dragState.scrollDir) return;
+  dragState.scrollDir = dir;
+  clearInterval(dragState.scrollTimer);
+  dragState.scrollTimer = dir === 0 ? null : setInterval(() => {
+    window.scrollBy(0, dir * STEP);
+    placeRow(dragState.lastY);
+  }, 16);
+}
+
+function endDrag(e) {
+  if (!dragState || (e && e.pointerId !== dragState.pointerId)) return;
+  const { row, listEl } = dragState;
+  clearInterval(dragState.scrollTimer);
+  window.removeEventListener('pointermove', onDragMove);
+  window.removeEventListener('pointerup', endDrag);
+  window.removeEventListener('pointercancel', endDrag);
+  row.classList.remove('dragging');
+  listEl.classList.remove('reordering');
+  photos = Array.from(listEl.children).map(r => r.photo);
+  dragState = null;
   renderPhotoList();
 }
 
