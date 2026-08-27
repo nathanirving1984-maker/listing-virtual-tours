@@ -204,29 +204,64 @@ async function downloadFile(url, destPath) {
 // Preserves every pixel of the original photo exactly (including any overlaid
 // text/graphics), unlike Runway which redraws the frame and can distort or
 // drop text. Also free — no API cost per clip.
-async function panZoomClip(imagePath, outputPath, { durationSec = 5, fps = 25, zoomTo = 1.3, direction = 'in' } = {}) {
-  const frames = durationSec * fps;
-  const zoomExpr = direction === 'in'
-    ? `min(zoom+${((zoomTo - 1) / frames).toFixed(6)},${zoomTo})`
-    : `if(eq(on,0),${zoomTo},max(zoom-${((zoomTo - 1) / frames).toFixed(6)},1))`;
+//
+// Three things matter for this not to look cheap:
+//
+// 1. Aspect. The photo is cover-cropped to 16:9 BEFORE zoompan. zoompan fits its
+//    input to the output size, so handing it a 4:3 photo with s=1280x720 stretched
+//    every room horizontally — circles came out as ellipses.
+// 2. Position. zoompan defaults x=0,y=0, i.e. it zooms into the top-left corner.
+//    The x/y expressions below keep the motion centred on the room.
+// 3. Smoothness. zoompan snaps its crop origin to whole pixels, which judders on
+//    slow moves. Rendering at 2560 wide and downscaling halves that rounding error
+//    in the delivered frame, for far less time and memory than supersampling the
+//    input (an 8000px input costs 4x the render time and ~50MB more peak RSS).
+//    Don't tune these constants by measuring one test image: the visible judder
+//    depends on how far a feature sits from the zoom centre, so per-image numbers
+//    look like resonances that don't generalise.
+const PANZOOM_SUPERSAMPLE = Number(process.env.PANZOOM_SUPERSAMPLE || 2400);
+const PANZOOM_RENDER_WIDTH = Number(process.env.PANZOOM_RENDER_WIDTH || 2560);
 
-  // Cap the upscale target at 2400px wide (was 8000) regardless of the source
-  // photo's resolution — this is the main memory fix. A 12MP staged photo
-  // scaled to 8000px wide before zoompan could push past Render's free-tier
-  // 512MB RAM limit and crash the container mid-request, which is what was
-  // producing the truncated/empty response on the frontend.
+const even = n => Math.round(n / 2) * 2;
+
+async function panZoomClip(imagePath, outputPath, { durationSec = 5, fps = 25, zoomTo = 1.15, direction = 'in' } = {}) {
+  const frames = durationSec * fps;
+  const step = ((zoomTo - 1) / frames).toFixed(6);
+  const zoomExpr = direction === 'in'
+    ? `min(zoom+${step},${zoomTo})`
+    : `if(eq(on,0),${zoomTo},max(zoom-${step},1))`;
+
+  const ssW = PANZOOM_SUPERSAMPLE, ssH = even(ssW * 9 / 16);
+  const rW = PANZOOM_RENDER_WIDTH, rH = even(rW * 9 / 16);
+
+  const vf = [
+    `scale=w=${ssW}:h=${ssH}:force_original_aspect_ratio=increase`,
+    `crop=${ssW}:${ssH}`,
+    `zoompan=z='${zoomExpr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${frames}:s=${rW}x${rH}:fps=${fps}`,
+    `scale=1280:720:flags=bicubic`
+  ].join(',');
+
   await execFileAsync('ffmpeg', [
     '-y',
     '-loop', '1',
     '-i', imagePath,
-    '-vf', `scale=w='min(2400,iw*3)':h=-1,zoompan=z='${zoomExpr}':d=${frames}:s=1280x720:fps=${fps}`,
+    '-vf', vf,
     '-t', String(durationSec),
     '-c:v', 'libx264',
     '-preset', 'veryfast',
+    '-crf', '20',
     '-threads', '1',
     '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart',
     outputPath
   ], { maxBuffer: 1024 * 1024 * 20 });
+}
+
+// Alternating the direction keeps a 15-room tour from feeling like the same
+// move fifteen times; exteriors pull back to reveal the house.
+function motionFor(index, roomType) {
+  if (roomType === 'exterior' || roomType === 'outdoor') return 'out';
+  return index % 2 === 0 ? 'in' : 'out';
 }
 
 // --- Stitching ---
@@ -286,7 +321,7 @@ app.post('/api/generate-tour', requirePassword, upload.array('photos', 15), asyn
       const roomType = roomTypes[index] || 'other';
       try {
         const clipPath = clipPathFor(index);
-        await panZoomClip(files[index].path, clipPath);
+        await panZoomClip(files[index].path, clipPath, { direction: motionFor(index, roomType) });
         completed.push({ index, roomType, motion: 'pan', path: clipPath });
         console.log(`[${jobId}] Generated pan/zoom ${clipLabel(index, roomType)}`);
       } catch (err) {
