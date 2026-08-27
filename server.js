@@ -13,6 +13,18 @@ const RUNWAY_VERSION = '2024-11-06';
 const RUNWAY_KEY = process.env.RUNWAYML_API_SECRET;
 const SITE_PASSWORD = process.env.SITE_PASSWORD || 'novato2026';
 
+// Runway caps how many generations an account may run at once. Submitting every
+// photo at the same time just parks the extras in a THROTTLED queue, where they
+// used to burn their whole timeout without ever rendering. Keep a small number
+// in flight instead, and wait for a slot before submitting the next.
+const RUNWAY_CONCURRENCY = Number(process.env.RUNWAY_CONCURRENCY || 2);
+// Time a task may spend queued (PENDING/THROTTLED) before we give up on it...
+const RUNWAY_QUEUE_TIMEOUT_MS = Number(process.env.RUNWAY_QUEUE_TIMEOUT_MS || 15 * 60 * 1000);
+// ...and time it may spend actually rendering (RUNNING) once it gets a slot.
+// These are separate on purpose: queue waits say nothing about whether the clip
+// itself is stuck, so a single combined clock made slow queues look like failures.
+const RUNWAY_RENDER_TIMEOUT_MS = Number(process.env.RUNWAY_RENDER_TIMEOUT_MS || 10 * 60 * 1000);
+
 if (!RUNWAY_KEY) {
   console.error('Missing RUNWAYML_API_SECRET in environment. Set it before starting the server.');
 }
@@ -54,8 +66,49 @@ const ROOM_PROMPTS = {
   other: 'Slow, smooth forward camera glide through the room, gentle motion, no people, no camera shake, cinematic real estate look'
 };
 
+const ROOM_LABELS = {
+  exterior: 'Exterior / Front',
+  living: 'Living Room',
+  kitchen: 'Kitchen',
+  primary_bedroom: 'Primary Bedroom',
+  bedroom: 'Bedroom',
+  bathroom: 'Bathroom',
+  dining: 'Dining Room',
+  outdoor: 'Backyard / Outdoor',
+  other: 'Other'
+};
+
 function promptFor(roomType) {
   return ROOM_PROMPTS[roomType] || ROOM_PROMPTS.other;
+}
+
+// "clip 3 (Kitchen)" — so an error names the photo the user has to look at.
+function clipLabel(index, roomType) {
+  return `clip ${index + 1} (${ROOM_LABELS[roomType] || 'Other'})`;
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// Runs `worker` over `items`, at most `limit` at a time. Every item is attempted
+// even if an earlier one throws; results come back in the input order so callers
+// can tell which clip failed.
+async function runWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const runner = async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      try {
+        results[i] = { ok: true, value: await worker(items[i], i) };
+      } catch (err) {
+        results[i] = { ok: false, error: err };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, runner));
+  return results;
 }
 
 // --- Runway calls ---
@@ -83,29 +136,61 @@ async function createImageToVideoTask(base64DataUri, promptText) {
   return data.id;
 }
 
-async function pollTask(taskId, { intervalMs = 4000, timeoutMs = 5 * 60 * 1000 } = {}) {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    const res = await fetch(`${RUNWAY_API_BASE}/tasks/${taskId}`, {
-      headers: {
-        'Authorization': `Bearer ${RUNWAY_KEY}`,
-        'X-Runway-Version': RUNWAY_VERSION
-      }
-    });
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Runway task status check failed (${res.status}): ${errText}`);
+async function getTask(taskId) {
+  const res = await fetch(`${RUNWAY_API_BASE}/tasks/${taskId}`, {
+    headers: {
+      'Authorization': `Bearer ${RUNWAY_KEY}`,
+      'X-Runway-Version': RUNWAY_VERSION
     }
-    const data = await res.json();
-    if (data.status === 'SUCCEEDED') {
-      return data.output && data.output[0];
-    }
-    if (data.status === 'FAILED') {
-      throw new Error(`Runway task ${taskId} failed: ${data.failure || 'unknown reason'}`);
-    }
-    await new Promise(r => setTimeout(r, intervalMs));
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Runway task status check failed (${res.status}): ${errText}`);
   }
-  throw new Error(`Runway task ${taskId} timed out after ${timeoutMs / 1000}s`);
+  return res.json();
+}
+
+// Polls one task to completion. The render clock only starts once Runway reports
+// RUNNING, so time spent queued behind other generations can't be mistaken for a
+// stuck render. Every status change is logged so the Render logs show whether a
+// slow clip was THROTTLED (waiting for a slot) or RUNNING (actually generating).
+async function pollTask(taskId, { label = '', jobId = '', intervalMs = 4000 } = {}) {
+  const queuedAt = Date.now();
+  let runningAt = null;
+  let lastStatus = null;
+  const tag = `[${jobId}] Runway task ${taskId}${label ? ' — ' + label : ''}`;
+
+  for (;;) {
+    const data = await getTask(taskId);
+
+    if (data.status !== lastStatus) {
+      lastStatus = data.status;
+      console.log(`${tag}: ${data.status}`);
+      if (data.status === 'RUNNING' && runningAt === null) runningAt = Date.now();
+    }
+
+    if (data.status === 'SUCCEEDED') return data.output && data.output[0];
+    if (data.status === 'FAILED' || data.status === 'CANCELLED') {
+      throw new Error(`Runway ${label || 'task'} ${data.status === 'CANCELLED' ? 'was cancelled' : 'failed'} `
+        + `(task ${taskId}): ${data.failure || data.failureCode || 'no reason given'}`);
+    }
+
+    const waitedSec = Math.round((Date.now() - queuedAt) / 1000);
+    if (runningAt !== null) {
+      if (Date.now() - runningAt > RUNWAY_RENDER_TIMEOUT_MS) {
+        throw new Error(`Runway ${label || 'task'} was still rendering after `
+          + `${Math.round(RUNWAY_RENDER_TIMEOUT_MS / 1000)}s (task ${taskId}, status ${lastStatus}). `
+          + `If it finishes later you can still fetch it with Recover clips.`);
+      }
+    } else if (Date.now() - queuedAt > RUNWAY_QUEUE_TIMEOUT_MS) {
+      throw new Error(`Runway ${label || 'task'} never started rendering — it sat in Runway's `
+        + `queue for ${waitedSec}s at status ${lastStatus} (task ${taskId}). This usually means the `
+        + `account's concurrent-generation limit is full. If it finishes later you can still fetch `
+        + `it with Recover clips.`);
+    }
+
+    await sleep(intervalMs);
+  }
 }
 
 async function downloadFile(url, destPath) {
@@ -168,6 +253,11 @@ app.post('/api/generate-tour', requirePassword, upload.array('photos', 15), asyn
   const jobDir = path.join(__dirname, 'temp', jobId);
   fs.mkdirSync(jobDir, { recursive: true });
 
+  // Clips that made it. Kept outside the try so the failure path can still hand
+  // back work that was already paid for instead of deleting it.
+  const completed = [];   // { index, roomType, motion, path, taskId }
+  const failures = [];    // { index, roomType, motion, error, taskId }
+
   try {
     const roomTypes = JSON.parse(req.body.roomTypes || '[]'); // array aligned with req.files order
     // motionTypes[i] is 'pan' (free, text-safe, default) or 'ai' (Runway, paid, no on-photo text)
@@ -180,63 +270,199 @@ app.post('/api/generate-tour', requirePassword, upload.array('photos', 15), asyn
 
     console.log(`[${jobId}] Starting job with ${files.length} photos`);
 
-    const clipPaths = new Array(files.length);
-
-    // 1. Photos flagged 'ai' go to Runway in parallel; 'pan' photos never touch the API
     const aiIndices = [];
     const panIndices = [];
     files.forEach((f, i) => {
       (((motionTypes[i] || 'pan') === 'ai') ? aiIndices : panIndices).push(i);
     });
 
-    const aiTaskPromises = aiIndices.map(async (i) => {
-      const roomType = roomTypes[i] || 'other';
-      const imageBuffer = fs.readFileSync(files[i].path);
-      const mimeType = files[i].mimetype || 'image/jpeg';
-      const dataUri = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
-      const taskId = await createImageToVideoTask(dataUri, promptFor(roomType));
-      console.log(`[${jobId}] Started Runway task ${taskId} for room ${i} (${roomType})`);
-      return { index: i, taskId };
-    });
-    const aiTasks = await Promise.all(aiTaskPromises);
+    const clipPathFor = i => path.join(jobDir, `clip_${String(i).padStart(2, '0')}.mp4`);
 
-    // Runway clips (network-bound, not memory-heavy locally) still run in parallel.
-    // Pan/zoom clips run one at a time — each ffmpeg process is memory-heavy enough
-    // that running several simultaneously on a small Render instance can OOM the
-    // container mid-request, which is what caused the empty/truncated response.
-    const runwayPromise = Promise.all(aiTasks.map(async ({ index, taskId }) => {
-      const videoUrl = await pollTask(taskId);
-      const clipPath = path.join(jobDir, `clip_${String(index).padStart(2, '0')}.mp4`);
-      await downloadFile(videoUrl, clipPath);
-      clipPaths[index] = clipPath;
-      console.log(`[${jobId}] Downloaded Runway clip ${index}`);
-    }));
-
+    // 1. Pan/zoom clips first: they're free, local, and can't fail on someone
+    // else's queue, so getting them done means a later Runway problem still
+    // leaves something to hand back. One at a time — each ffmpeg process is
+    // memory-heavy enough that running several at once can OOM a small instance.
     for (const index of panIndices) {
-      const clipPath = path.join(jobDir, `clip_${String(index).padStart(2, '0')}.mp4`);
-      await panZoomClip(files[index].path, clipPath);
-      clipPaths[index] = clipPath;
-      console.log(`[${jobId}] Generated pan/zoom clip ${index}`);
+      const roomType = roomTypes[index] || 'other';
+      try {
+        const clipPath = clipPathFor(index);
+        await panZoomClip(files[index].path, clipPath);
+        completed.push({ index, roomType, motion: 'pan', path: clipPath });
+        console.log(`[${jobId}] Generated pan/zoom ${clipLabel(index, roomType)}`);
+      } catch (err) {
+        failures.push({ index, roomType, motion: 'pan', error: err.message });
+        console.error(`[${jobId}] Failed pan/zoom ${clipLabel(index, roomType)}: ${err.message}`);
+      }
     }
 
-    await runwayPromise;
+    // 2. Runway clips, at most RUNWAY_CONCURRENCY in flight. Each slot submits
+    // its own task and polls it to completion before taking the next photo, so
+    // nothing is created only to sit throttled in Runway's queue.
+    if (aiIndices.length) {
+      console.log(`[${jobId}] ${aiIndices.length} AI clip(s), ${RUNWAY_CONCURRENCY} at a time`);
+    }
+    await runWithConcurrency(aiIndices, RUNWAY_CONCURRENCY, async (index) => {
+      const roomType = roomTypes[index] || 'other';
+      const label = clipLabel(index, roomType);
+      let taskId = null;
+      try {
+        const imageBuffer = fs.readFileSync(files[index].path);
+        const mimeType = files[index].mimetype || 'image/jpeg';
+        const dataUri = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
+        taskId = await createImageToVideoTask(dataUri, promptFor(roomType));
+        console.log(`[${jobId}] Submitted ${label} as Runway task ${taskId}`);
 
-    // 3. Stitch in original room order
-    const outputFileName = `tour_${jobId}.mp4`;
+        const videoUrl = await pollTask(taskId, { label, jobId });
+        const clipPath = clipPathFor(index);
+        await downloadFile(videoUrl, clipPath);
+        completed.push({ index, roomType, motion: 'ai', path: clipPath, taskId });
+        console.log(`[${jobId}] Downloaded ${label}`);
+      } catch (err) {
+        failures.push({ index, roomType, motion: 'ai', error: err.message, taskId });
+        console.error(`[${jobId}] Failed ${label}: ${err.message}`);
+      }
+    });
+
+    if (completed.length === 0) {
+      return res.status(500).json({
+        error: failures.map(f => f.error).join(' | ') || 'No clips were generated',
+        failures: failures.map(describeFailure)
+      });
+    }
+
+    // 3. Stitch in original photo order.
+    completed.sort((a, b) => a.index - b.index);
+    const partial = failures.length > 0;
+    const outputFileName = `tour_${jobId}${partial ? '_partial' : ''}.mp4`;
     const outputPath = path.join(__dirname, 'outputs', outputFileName);
-    await stitchClips(clipPaths, outputPath);
+    await stitchClips(completed.map(c => c.path), outputPath);
 
-    console.log(`[${jobId}] Done: ${outputFileName}`);
-    res.json({ success: true, videoUrl: `/outputs/${outputFileName}` });
+    // On a partial run, also keep each finished clip on its own. The tour is
+    // missing rooms, but every clip in it was generated (and for AI clips, paid
+    // for) and shouldn't be thrown away because a sibling timed out.
+    const keptClips = partial ? preserveClips(jobId, completed) : [];
+
+    console.log(`[${jobId}] Done: ${outputFileName}`
+      + (partial ? ` (partial — ${completed.length} of ${completed.length + failures.length} clips)` : ''));
+
+    res.json({
+      success: true,
+      partial,
+      videoUrl: `/outputs/${outputFileName}`,
+      clipCount: completed.length,
+      requestedCount: completed.length + failures.length,
+      failures: failures.map(describeFailure),
+      clips: keptClips
+    });
 
   } catch (err) {
     console.error(`[${jobId}] Error:`, err.message);
-    res.status(500).json({ error: err.message });
+    // Even on an unexpected error, hand back whatever finished.
+    const keptClips = preserveClips(jobId, completed);
+    res.status(500).json({
+      error: err.message,
+      failures: failures.map(describeFailure),
+      clips: keptClips
+    });
   } finally {
-    // Clean up uploaded originals and temp clips
+    // Uploaded originals always go; temp clips have been copied out by now.
     if (req.files) req.files.forEach(f => fs.existsSync(f.path) && fs.unlinkSync(f.path));
     fs.rmSync(jobDir, { recursive: true, force: true });
   }
+});
+
+function describeFailure(f) {
+  return {
+    clip: f.index + 1,
+    room: ROOM_LABELS[f.roomType] || 'Other',
+    motion: f.motion,
+    taskId: f.taskId || null,
+    error: f.error
+  };
+}
+
+// Copies finished clips out of the scratch job dir into outputs/ so they survive
+// the cleanup below and can be downloaded individually.
+function preserveClips(jobId, completed) {
+  const kept = [];
+  for (const c of [...completed].sort((a, b) => a.index - b.index)) {
+    try {
+      if (!fs.existsSync(c.path)) continue;
+      const name = `clip_${jobId}_${String(c.index).padStart(2, '0')}.mp4`;
+      fs.copyFileSync(c.path, path.join(__dirname, 'outputs', name));
+      kept.push({
+        clip: c.index + 1,
+        room: ROOM_LABELS[c.roomType] || 'Other',
+        motion: c.motion,
+        taskId: c.taskId || null,
+        url: `/outputs/${name}`
+      });
+    } catch (err) {
+      console.error(`[${jobId}] Could not preserve clip ${c.index}: ${err.message}`);
+    }
+  }
+  return kept;
+}
+
+// Pull already-generated clips back out of Runway by task ID. A task that
+// finished after this server stopped waiting is still sitting on Runway's side,
+// already paid for — this fetches it rather than regenerating it. Runway expires
+// output URLs after a while, so this only works for reasonably recent tasks.
+app.post('/api/recover-clips', requirePassword, async (req, res) => {
+  const taskIds = (Array.isArray(req.body.taskIds) ? req.body.taskIds : String(req.body.taskIds || '')
+    .split(/[\s,]+/))
+    .map(t => String(t).trim())
+    .filter(Boolean)
+    .slice(0, 15);
+
+  if (taskIds.length === 0) return res.status(400).json({ error: 'No task IDs given' });
+
+  const results = [];
+  for (const taskId of taskIds) {
+    try {
+      const data = await getTask(taskId);
+      if (data.status !== 'SUCCEEDED') {
+        results.push({
+          taskId,
+          status: data.status,
+          error: data.status === 'FAILED' || data.status === 'CANCELLED'
+            ? `Task ${data.status.toLowerCase()} on Runway's side — nothing to recover.`
+            : `Still ${data.status} on Runway — try again in a minute.`
+        });
+        continue;
+      }
+      const url = data.output && data.output[0];
+      if (!url) {
+        results.push({ taskId, status: data.status, error: 'Task succeeded but returned no video URL (the output may have expired).' });
+        continue;
+      }
+      const name = `recovered_${taskId}.mp4`;
+      await downloadFile(url, path.join(__dirname, 'outputs', name));
+      console.log(`[recover] Recovered task ${taskId}`);
+      results.push({ taskId, status: data.status, url: `/outputs/${name}` });
+    } catch (err) {
+      console.error(`[recover] ${taskId}: ${err.message}`);
+      results.push({ taskId, error: err.message });
+    }
+  }
+
+  // If several came back, offer them stitched in the order given as well.
+  const recovered = results.filter(r => r.url);
+  let stitchedUrl = null;
+  if (recovered.length > 1) {
+    try {
+      const name = `recovered_${uuidv4()}.mp4`;
+      await stitchClips(
+        recovered.map(r => path.join(__dirname, 'outputs', path.basename(r.url))),
+        path.join(__dirname, 'outputs', name)
+      );
+      stitchedUrl = `/outputs/${name}`;
+    } catch (err) {
+      console.error(`[recover] Stitch failed: ${err.message}`);
+    }
+  }
+
+  res.json({ results, stitchedUrl, recoveredCount: recovered.length });
 });
 
 app.post('/api/check-password', (req, res) => {
