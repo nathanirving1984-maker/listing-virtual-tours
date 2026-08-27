@@ -202,6 +202,20 @@
     border-bottom: 1px solid var(--border);
   }
   .photo-row:last-child { border-bottom: none; }
+  .photo-order {
+    flex: 0 0 26px;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--cb-blue);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-variant-numeric: tabular-nums;
+  }
   .photo-row img {
     width: 74px;
     height: 54px;
@@ -352,7 +366,7 @@
       <input type="file" id="fileInput" accept="image/*" multiple class="hidden">
     </div>
     <div id="photoList"></div>
-    <small class="hint">Each photo generates a ~5 second clip. Clips are stitched in the order shown above &mdash; drag isn't supported yet, so add photos in the order you want them to appear.</small>
+    <small class="hint">Each photo generates a ~5 second clip. The number on each row is that clip's position in the finished video &mdash; clips are stitched in the order shown above. Drag isn't supported yet, so add photos in the order you want them to appear.</small>
     <div style="margin-top:22px;">
       <button id="generateBtn" onclick="generateTour()" disabled>Generate Video Tour</button>
     </div>
@@ -435,6 +449,7 @@ function renderPhotoList() {
     const row = document.createElement('div');
     row.className = 'photo-row';
     row.innerHTML = `
+      <span class="photo-order" title="Position in the finished video">${i + 1}</span>
       <img src="${p.previewUrl}">
       <select onchange="photos[${i}].roomType = this.value">
         ${ROOM_TYPES.map(([val, label]) => `<option value="${val}" ${val === p.roomType ? 'selected' : ''}>${label}</option>`).join('')}
