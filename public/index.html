@@ -321,6 +321,57 @@
     font-size: 13px;
   }
 
+  .notice {
+    border: 1px solid #e6d3a3;
+    background: #fdf8ec;
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 13px 15px;
+    margin-top: 14px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: #6b5528;
+  }
+  .notice strong { color: #4d3d1c; }
+  .notice ul { margin: 8px 0 0; padding-left: 18px; }
+  .notice li { margin-bottom: 4px; }
+
+  .clip-list {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 0;
+    font-size: 13px;
+  }
+  .clip-list li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .clip-list li:last-child { border-bottom: none; }
+  .clip-list .clip-room { color: var(--text-muted); }
+  .clip-list a { color: var(--cb-blue); font-weight: 600; text-decoration: none; }
+  .clip-list a:hover { text-decoration: underline; }
+
+  textarea {
+    width: 100%;
+    min-height: 78px;
+    padding: 11px 13px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text);
+    background: #fff;
+    resize: vertical;
+  }
+  textarea:focus {
+    outline: none;
+    border-color: var(--cb-blue-400);
+    box-shadow: 0 0 0 3px var(--cb-blue-100);
+  }
+
   /* ---------- Footer ---------- */
   footer {
     max-width: 780px;
@@ -392,11 +443,30 @@
 
   <div class="card hidden" id="result">
     <p class="card-title">Step 2 &middot; Your tour</p>
+    <div id="partialNotice" class="notice hidden"></div>
     <label>Your video tour</label>
     <video id="resultVideo" controls></video>
     <div style="margin-top:14px;">
       <a id="downloadLink" class="download-link" href="#" download>Download MP4</a>
     </div>
+    <div id="clipDownloads"></div>
+  </div>
+
+  <div class="card hidden" id="recover-card">
+    <p class="card-title">Recover clips</p>
+    <label for="taskIds">Runway task IDs</label>
+    <textarea id="taskIds" placeholder="ede2d3c9-7f4c-40d1-a1cf-262e140171e2&#10;one per line, or separated by commas"></textarea>
+    <small class="hint">
+      If a clip timed out, it usually finishes on Runway a little later &mdash; and it's already
+      paid for. Paste the task ID from the error message (or from the Render logs) to pull the
+      finished clip back without regenerating it. Runway expires these after a day or two, so
+      recover sooner rather than later. Paste several IDs to also get them stitched together.
+    </small>
+    <div style="margin-top:16px;">
+      <button id="recoverBtn" onclick="recoverClips()">Recover clips</button>
+    </div>
+    <div id="recoverStatus" style="margin-top:14px; font-size:14px; color:var(--text-muted);"></div>
+    <div id="recoverResults"></div>
   </div>
 
 </main>
@@ -438,6 +508,7 @@ async function checkPassword() {
     sitePassword = pw;
     document.getElementById('gate').classList.add('hidden');
     document.getElementById('upload-card').classList.remove('hidden');
+    document.getElementById('recover-card').classList.remove('hidden');
   } else {
     document.getElementById('gate-error').textContent = 'Incorrect password.';
   }
@@ -521,6 +592,25 @@ function removePhoto(p) {
   URL.revokeObjectURL(p.previewUrl);
   photos.splice(i, 1);
   renderPhotoList();
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderClipList(container, clips, heading) {
+  if (!clips || clips.length === 0) { container.innerHTML = ''; return; }
+  container.innerHTML = `
+    <label style="margin-top:18px;">${heading}</label>
+    <ul class="clip-list">
+      ${clips.map(c => `
+        <li>
+          <span><strong>${c.clip ? 'Clip ' + c.clip : 'Clip'}</strong>
+          <span class="clip-room">${escapeHtml(c.room || '')}</span></span>
+          <a href="${c.url}" download>Download</a>
+        </li>`).join('')}
+    </ul>`;
 }
 
 function movePhoto(from, to) {
@@ -610,10 +700,15 @@ async function generateTour() {
   const btn = document.getElementById('generateBtn');
   const status = document.getElementById('status');
   const progressBar = document.getElementById('progressBar');
+  const notice = document.getElementById('partialNotice');
   btn.disabled = true;
-  status.textContent = `Generating clips for ${photos.length} room(s)... this typically takes 1-3 minutes per room.`;
+  const aiCount = photos.filter(p => p.motionType === 'ai').length;
+  status.textContent = `Generating ${photos.length} clip(s)...`
+    + (aiCount ? ` The ${aiCount} AI clip(s) run two at a time through Runway's queue, so this can take several minutes.` : '');
   progressBar.classList.remove('hidden');
   document.getElementById('progressFill').style.width = '15%';
+  notice.classList.add('hidden');
+  document.getElementById('clipDownloads').innerHTML = '';
 
   const formData = new FormData();
   formData.append('password', sitePassword);
@@ -638,13 +733,94 @@ async function generateTour() {
           : `Server error (status ${res.status}): ${rawText.slice(0, 200) || 'no details returned'}`
       );
     }
-    if (!res.ok) throw new Error(data.error || 'Generation failed');
+    if (!res.ok) {
+      // Even a failed run can hand back clips that finished — show them.
+      showFailures(data.failures, data.clips);
+      throw new Error(data.error || 'Generation failed');
+    }
 
     document.getElementById('progressFill').style.width = '100%';
-    status.textContent = 'Done!';
     document.getElementById('result').classList.remove('hidden');
     document.getElementById('resultVideo').src = data.videoUrl;
     document.getElementById('downloadLink').href = data.videoUrl;
+
+    if (data.partial) {
+      status.textContent = `Done, with ${data.requestedCount - data.clipCount} clip(s) missing.`;
+      notice.classList.remove('hidden');
+      notice.innerHTML = `
+        <strong>This tour is incomplete.</strong> ${data.clipCount} of ${data.requestedCount} clips
+        were stitched — the rooms below are missing from the video:
+        <ul>${(data.failures || []).map(f => `
+          <li><strong>Clip ${f.clip} (${escapeHtml(f.room)})</strong> — ${escapeHtml(f.error)}
+          ${f.taskId ? `<br>Task ID: <code>${escapeHtml(f.taskId)}</code>` : ''}</li>`).join('')}
+        </ul>`;
+      renderClipList(document.getElementById('clipDownloads'), data.clips,
+        'Individual clips (already generated — no need to pay for these again)');
+    } else {
+      status.textContent = 'Done!';
+    }
+  } catch (err) {
+    status.textContent = 'Error: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function showFailures(failures, clips) {
+  if (!failures || failures.length === 0) return;
+  const notice = document.getElementById('partialNotice');
+  document.getElementById('result').classList.remove('hidden');
+  notice.classList.remove('hidden');
+  notice.innerHTML = `
+    <strong>Some clips didn't finish.</strong>
+    <ul>${failures.map(f => `
+      <li><strong>Clip ${f.clip} (${escapeHtml(f.room)})</strong> — ${escapeHtml(f.error)}
+      ${f.taskId ? `<br>Task ID: <code>${escapeHtml(f.taskId)}</code>` : ''}</li>`).join('')}
+    </ul>`;
+  renderClipList(document.getElementById('clipDownloads'), clips, 'Clips that did finish');
+}
+
+async function recoverClips() {
+  const btn = document.getElementById('recoverBtn');
+  const status = document.getElementById('recoverStatus');
+  const results = document.getElementById('recoverResults');
+  const ids = document.getElementById('taskIds').value.trim();
+  if (!ids) { status.textContent = 'Paste at least one Runway task ID.'; return; }
+
+  btn.disabled = true;
+  status.textContent = 'Checking Runway...';
+  results.innerHTML = '';
+
+  try {
+    const res = await fetch('/api/recover-clips', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-site-password': sitePassword },
+      body: JSON.stringify({ taskIds: ids })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Recovery failed');
+
+    const ok = (data.results || []).filter(r => r.url);
+    const bad = (data.results || []).filter(r => !r.url);
+    status.textContent = `Recovered ${ok.length} of ${data.results.length} clip(s).`;
+
+    let html = '';
+    if (ok.length) {
+      html += `<ul class="clip-list">${ok.map(r => `
+        <li><span class="clip-room">${escapeHtml(r.taskId)}</span>
+        <a href="${r.url}" download>Download</a></li>`).join('')}</ul>`;
+    }
+    if (data.stitchedUrl) {
+      html += `<div style="margin-top:14px;">
+        <a class="download-link" href="${data.stitchedUrl}" download>Download all ${ok.length} stitched together</a>
+      </div>`;
+    }
+    if (bad.length) {
+      html += `<div class="notice"><strong>Couldn't recover:</strong>
+        <ul>${bad.map(r => `<li><code>${escapeHtml(r.taskId)}</code> — ${escapeHtml(r.error || 'unknown error')}</li>`).join('')}</ul>
+      </div>`;
+    }
+    results.innerHTML = html;
   } catch (err) {
     status.textContent = 'Error: ' + err.message;
   } finally {
