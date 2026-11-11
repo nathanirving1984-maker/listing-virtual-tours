@@ -2,7 +2,7 @@
 
 Turns staged listing photos into a single stitched AI video tour using Runway's
 `gen4_turbo` image-to-video model. Upload one photo per room, tag each with a room
-type, and it generates a ~5 second clip per room, then stitches them in order into
+type, and it generates a 2.5 second clip per room, then stitches them in order into
 one MP4.
 
 ## How it works
@@ -22,7 +22,7 @@ No prompt-writing required day to day — the room-type prompts are baked in
 ## Cost per tour
 
 Runway's `gen4_turbo` is priced per second of generated video (~$0.01/sec as of
-mid-2026). A 5-second clip per room means roughly **$0.05 per room**, so an
+mid-2026). Runway only renders 5- or 10-second clips, so each AI clip is generated at 5 seconds and trimmed to 2.5 before stitching (set by `CLIP_SECONDS` in `server.js`). A 5-second generation per room means roughly **$0.05 per room**, so an
 8-10 room listing runs **well under $1** in API cost. Keep an eye on your credit
 balance in the Runway dev dashboard — this app doesn't track spend itself.
 
