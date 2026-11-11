@@ -111,6 +111,14 @@ async function runWithConcurrency(items, limit, worker) {
   return results;
 }
 
+// --- Clip length ---
+// How long each photo stays on screen in the finished tour. Runway's gen4_turbo
+// only renders 5s or 10s clips, so AI clips are still generated at 5s (same
+// cost) and then trimmed down to this; pan/zoom clips are rendered at it directly.
+// 15 photos x 2.5s = ~37s, a comfortable length for Instagram Reels.
+const CLIP_SECONDS = 2.5;
+const RUNWAY_DURATION = 5;
+
 // --- Runway calls ---
 async function createImageToVideoTask(base64DataUri, promptText) {
   const res = await fetch(`${RUNWAY_API_BASE}/image_to_video`, {
@@ -125,7 +133,7 @@ async function createImageToVideoTask(base64DataUri, promptText) {
       promptImage: base64DataUri,
       promptText,
       ratio: '1280:720',
-      duration: 5
+      duration: RUNWAY_DURATION
     })
   });
   if (!res.ok) {
@@ -204,8 +212,8 @@ async function downloadFile(url, destPath) {
 // Preserves every pixel of the original photo exactly (including any overlaid
 // text/graphics), unlike Runway which redraws the frame and can distort or
 // drop text. Also free — no API cost per clip.
-async function panZoomClip(imagePath, outputPath, { durationSec = 5, fps = 25, zoomTo = 1.3, direction = 'in' } = {}) {
-  const frames = durationSec * fps;
+async function panZoomClip(imagePath, outputPath, { durationSec = CLIP_SECONDS, fps = 25, zoomTo = 1.3, direction = 'in' } = {}) {
+  const frames = Math.round(durationSec * fps);
   const zoomExpr = direction === 'in'
     ? `min(zoom+${((zoomTo - 1) / frames).toFixed(6)},${zoomTo})`
     : `if(eq(on,0),${zoomTo},max(zoom-${((zoomTo - 1) / frames).toFixed(6)},1))`;
@@ -221,6 +229,24 @@ async function panZoomClip(imagePath, outputPath, { durationSec = 5, fps = 25, z
     '-i', imagePath,
     '-vf', `scale=w='min(2400,iw*3)':h=-1,zoompan=z='${zoomExpr}':d=${frames}:s=1280x720:fps=${fps}`,
     '-t', String(durationSec),
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-threads', '1',
+    '-pix_fmt', 'yuv420p',
+    outputPath
+  ], { maxBuffer: 1024 * 1024 * 20 });
+}
+
+// Cuts a clip to its first `durationSec` seconds. Re-encodes (rather than
+// stream-copying) so the cut lands on the exact frame instead of the nearest
+// keyframe, and so every clip matches the pan/zoom clips' format for concat.
+async function trimClip(inputPath, outputPath, durationSec = CLIP_SECONDS) {
+  await execFileAsync('ffmpeg', [
+    '-y',
+    '-i', inputPath,
+    '-t', String(durationSec),
+    '-an',
+    '-vf', 'scale=1280:720,fps=25',
     '-c:v', 'libx264',
     '-preset', 'veryfast',
     '-threads', '1',
@@ -314,7 +340,10 @@ app.post('/api/generate-tour', requirePassword, upload.array('photos', 15), asyn
 
         const videoUrl = await pollTask(taskId, { label, jobId });
         const clipPath = clipPathFor(index);
-        await downloadFile(videoUrl, clipPath);
+        const rawPath = clipPath.replace('.mp4', '_raw.mp4');
+        await downloadFile(videoUrl, rawPath);
+        await trimClip(rawPath, clipPath);
+        fs.unlinkSync(rawPath);
         completed.push({ index, roomType, motion: 'ai', path: clipPath, taskId });
         console.log(`[${jobId}] Downloaded ${label}`);
       } catch (err) {
@@ -451,11 +480,21 @@ app.post('/api/recover-clips', requirePassword, async (req, res) => {
   let stitchedUrl = null;
   if (recovered.length > 1) {
     try {
+      // Individual recovered clips stay full length; the stitched version uses
+      // the same trimmed clip length as a normal tour.
       const name = `recovered_${uuidv4()}.mp4`;
-      await stitchClips(
-        recovered.map(r => path.join(__dirname, 'outputs', path.basename(r.url))),
-        path.join(__dirname, 'outputs', name)
-      );
+      const trimmed = [];
+      try {
+        for (const r of recovered) {
+          const src = path.join(__dirname, 'outputs', path.basename(r.url));
+          const dst = path.join(__dirname, 'temp', `trim_${uuidv4()}.mp4`);
+          await trimClip(src, dst);
+          trimmed.push(dst);
+        }
+        await stitchClips(trimmed, path.join(__dirname, 'outputs', name));
+      } finally {
+        trimmed.forEach(t => fs.existsSync(t) && fs.unlinkSync(t));
+      }
       stitchedUrl = `/outputs/${name}`;
     } catch (err) {
       console.error(`[recover] Stitch failed: ${err.message}`);
